@@ -19,6 +19,58 @@
 #include <linux/types.h>
 #include <linux/wireless.h>
 #include <syslog.h>
+#include <stdbool.h>
+
+static const int hex2bin_tbl[256] = {
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, -1, -1, -1, -1, -1, -1,
+	-1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+};
+
+bool hex2bin(unsigned char *p, const char *hexstr, size_t len)
+{
+	int nibble1, nibble2;
+	unsigned char idx;
+	bool ret = false;
+
+	while (*hexstr && len) {
+		if (!hexstr[1]) {
+			//applog(LOG_ERR, "hex2bin str truncated");
+			return ret;
+		}
+
+		idx = *hexstr++;
+		nibble1 = hex2bin_tbl[idx];
+		idx = *hexstr++;
+		nibble2 = hex2bin_tbl[idx];
+
+		if ((nibble1 < 0) || (nibble2 < 0)) 
+		{
+			//applog(LOG_ERR, "hex2bin scan failed");
+			return ret;
+		}
+
+		*p++ = (((unsigned char)nibble1) << 4) | ((unsigned char)nibble2);
+		--len;
+	}
+
+	if (len == 0 && *hexstr == 0)
+		ret = true;
+	return ret;
+}
 
 struct survey_table
 {
@@ -31,6 +83,8 @@ struct survey_table
 
 static struct survey_table st[64];
 static int survey_count = 0;
+#define AP_CLI_LOG_SIZE IW_SCAN_MAX_DATA
+static char log_buf[AP_CLI_LOG_SIZE];
 
 #define DEBUG
 
@@ -59,11 +113,11 @@ int print_log(const char *fmt, ...)
 {
 	va_list args;
 	int i;
-	char buf[512];
+	//char buf[512];
 	va_start(args, fmt);
-	i = vsprintf(buf, fmt, args);
+	i = vsnprintf(log_buf, AP_CLI_LOG_SIZE, fmt, args);
 	va_end(args);
-	print_f(buf);
+	print_f(log_buf);
 	return i;
 }
 #else
@@ -130,6 +184,12 @@ static void wifi_site_survey(const char *ifname, int print)
 	int socket_id;
 	struct iwreq wrq;
 	char *line, *start;
+	
+	if (NULL == s)
+	{
+		print_log("malloc error\n");
+		return;
+	}
 
 	iwpriv(ifname, "SiteSurvey", "");
 	sleep(5);
@@ -148,6 +208,7 @@ static void wifi_site_survey(const char *ifname, int print)
 		goto out;
 
 	/* ioctl result starts with a newline, for some reason */
+	print_log(s);
 	start = s;
 	while (*start == '\n')
 		start++;
@@ -185,9 +246,11 @@ static struct survey_table* wifi_find_ap(const char *name, const char *bssid, co
 //1: find mac addr
 	if (bssid && strlen(bssid)) {
 		for (i = 0; i < survey_count; i++)
+		{
 			if (!strcmp(bssid, (char*)st[i].bssid))
 				return &st[i];
-		return 0;
+		}
+		//return 0;
 	}
 //2: find ssid
 	for (i = 0; i < survey_count; i++)
@@ -286,7 +349,7 @@ int check_assoc(char *ifname)
 	return 0;
 }
 
-static void assoc_loop(char *ifname, char *staname, char *essid, char *pass, char *bssid, char *hidden)
+static void assoc_loop(char *ifname, char *staname, char *essid0, char *pass0, char *bssid, char *hidden)
 {
 	unsigned char cur_state,next_state=0;
 	unsigned char fail=0;
@@ -295,6 +358,25 @@ static void assoc_loop(char *ifname, char *staname, char *essid, char *pass, cha
 	unsigned char fail6=0;
 	unsigned char timeout=0;
 	struct survey_table *c=0;
+	char essid[40]={0};
+	char pass[68]={0};
+	
+	if (essid0[0]=='0'  && essid0[1]=='x' && pass0[0]=='0' && pass0[1]=='x')
+	{
+		if (hex2bin((unsigned char*)essid, (char*)(essid0+2),strlen(essid0)/2 - 1) == 0)
+			print_log("essid hex2bin error\n");
+		
+		if (hex2bin((unsigned char*)pass, (char*)(pass0+2), strlen(pass0)/2 - 1) == 0)
+			print_log("pass hex2bin error\n");
+		
+		print_log("TO CONNET: %s %s %s\n", essid, pass, bssid);
+	}
+	else
+	{
+		strncpy(essid, essid0, strlen(essid0));
+		strncpy(pass, pass0, strlen(pass0));
+	}
+	
 	while (1) {
 		sleep(1);
 		switch (cur_state = next_state)
@@ -312,15 +394,15 @@ static void assoc_loop(char *ifname, char *staname, char *essid, char *pass, cha
 			break;
 
 			case 1:			//scan
-			print_log("scanning:");
+			print_log("scanning:\n");
 			wifi_site_survey(ifname, 0); //run 5S
 			c = wifi_find_ap(essid, bssid,hidden);
 			if(c){	
-				print_log("find ap...\n");
+				print_log("find ap %s\n", essid);
 				next_state=2;
 			}else{
-				print_log("no ap...\n"); //no ap,wait for a long time
-				sleep(10*i++);
+				print_log("can't find ap %s\n", essid); //no ap,wait for a long time
+				sleep(i++);
 				if(i>12)
 					i=12;
 				next_state = 1;
@@ -328,7 +410,7 @@ static void assoc_loop(char *ifname, char *staname, char *essid, char *pass, cha
 			break;
 
 			case 2:			//try
-			wifi_repeater_start(ifname, staname, c->channel, essid, bssid, pass, c->security, c->crypto);
+			wifi_repeater_start(ifname, staname, c->channel, essid, c->bssid, pass, c->security, c->crypto);
 			sleep(6);
 			next_state = 3;
 			i=1;
@@ -376,7 +458,7 @@ static void assoc_loop(char *ifname, char *staname, char *essid, char *pass, cha
 			timeout=0;		
 			print_log("failure!!!!!\n");
 			iwpriv(staname, "ApCliEnable", "0");	//停掉sta	
-			sleep(600);
+			sleep(60);
 			next_state = 0;
 			break;
 			default:
