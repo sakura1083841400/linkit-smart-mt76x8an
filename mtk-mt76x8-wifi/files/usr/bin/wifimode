@@ -29,11 +29,17 @@ sta)	#client mode
 	uci delete wireless.sta.key
 	fi
 	fi
+	if [ -n "$4" ];then
+	uci set wireless.sta.bssid="$4"
+	else
+	uci delete wireless.sta.bssid
+	fi
 	uci set wireless.sta.disabled=0
 	uci set wireless.ap.hidden=1
 	uci set network.wwan=interface
 	uci set network.wwan.proto='dhcp'
 	uci set network.wwan.ifname='apcli0'
+	uci set network.wwan.metric='2'	
 	uci commit
 	/etc/init.d/network restart
 	;;
